@@ -24,9 +24,10 @@ RUN apt-get update \
 RUN python -m venv "$VIRTUAL_ENV" \
     && pip install torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
 
-RUN git clone --depth 1 --branch "$COMFYUI_REF" https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI \
-    && cd /opt/ComfyUI \
-    && pip install -r requirements.txt \
+RUN git clone --depth 1 --branch "$COMFYUI_REF" https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI
+
+WORKDIR /opt/ComfyUI
+RUN pip install -r requirements.txt \
     && if [ -f manager_requirements.txt ]; then pip install -r manager_requirements.txt; fi
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -37,7 +38,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 ENV COMFYUI_DIR=/opt/ComfyUI \
     DATA_DIR=/data
 
-WORKDIR /opt/ComfyUI
 VOLUME /data
 EXPOSE 8188
 

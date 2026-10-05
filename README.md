@@ -30,6 +30,16 @@ Apple Silicon, run ComfyUI natively (MPS) instead, for example with the official
 brew install --cask comfy
 ```
 
+For a lightweight, headless setup without the desktop app, use Comfy-Org's official
+[comfy-cli](https://github.com/Comfy-Org/comfy-cli) (not in Homebrew core; install with pipx):
+
+```bash
+brew install pipx
+pipx install comfy-cli
+comfy install     # sets up ComfyUI in ~/comfy with the Apple Silicon (MPS) PyTorch build
+comfy launch      # starts the server on http://127.0.0.1:8188
+```
+
 Use the `-cpu` image on a Mac only when you need a CPU-only or reproducible containerized setup.
 
 ## Quick start
