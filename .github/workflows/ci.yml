@@ -54,7 +54,7 @@ jobs:
       - name: Smoke test
         run: |
           docker run -d --name comfy -e COMFYUI_CPU=true -p 8188:8188 comfyui-ci:cpu
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8188/system_stats >/dev/null; then
               echo "ComfyUI is up"; exit 0
             fi
