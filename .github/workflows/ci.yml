@@ -10,11 +10,15 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # ubuntu-latest moves to 26.04 from late Oct 2026; test both until then.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
@@ -25,7 +29,7 @@ jobs:
       - name: yamllint
         run: pipx run yamllint -c .yamllint.yaml .
       - name: actionlint
-        uses: raven-actions/actionlint@v2
+        uses: raven-actions/actionlint@v2.2.0
       - name: Validate compose files
         run: |
           docker compose -f docker-compose.yml config -q
@@ -33,13 +37,13 @@ jobs:
 
   build:
     # Smoke test: the CPU variant builds and the entrypoint boots ComfyUI.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: lint
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Build (cpu)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
