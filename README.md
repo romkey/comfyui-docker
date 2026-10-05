@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Multi-arch (`linux/amd64`, `linux/arm64`) Docker images for [ComfyUI](https://github.com/Comfy-Org/ComfyUI).
-A GitHub Actions job checks daily for a new ComfyUI release and publishes an image tagged with the same
+A GitHub Actions job checks every few hours for a new ComfyUI release and publishes an image tagged with the same
 version (without the leading `v`) to `ghcr.io/romkey/comfyui-docker`. `latest` always tracks the newest release.
 
 ## AI disclosure
@@ -74,6 +74,24 @@ Common ones:
 | `COMFYUI_ENABLE_MANAGER`         | `true`    | Enable ComfyUI-Manager                                |
 | `COMFYUI_INSTALL_NODE_REQUIREMENTS` | `false` | Install custom nodes' `requirements.txt` on start     |
 | `COMFYUI_ARGS`                   | –         | Any extra raw ComfyUI arguments                       |
+
+## What's bundled
+
+- **ComfyUI-Manager**, installed with the ComfyUI release it belongs to.
+- **[ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)**, needed by most video workflows (ffmpeg is in the image).
+- **[Comfier agent](https://github.com/romkey/comfier-ui/tree/main/comfyui/comfier_agent)**, which stays idle until
+  `COMFIER_URL` and `COMFIER_API_KEY` are set.
+- CLI tools: `hf` (Hugging Face), `comfy` ([comfy-cli](https://github.com/Comfy-Org/comfy-cli), pre-pointed at the
+  bundled ComfyUI), and `aria2c`. Set `HF_TOKEN` / `HF_ENDPOINT` for the Hugging Face tools.
+  Example: `docker exec -it comfyui hf download <repo> <file> --local-dir /data/models/checkpoints`
+
+Bundled nodes are symlinked into `/data/custom_nodes` at every start, so image updates reach existing volumes.
+A real folder of the same name in `custom_nodes` always wins. Use `COMFYUI_BUNDLED_NODES` (`all`, `none`, or a
+comma-separated list) to choose which are linked, and `COMFYUI_PRELOAD_NODES` to clone extra nodes (git URLs,
+optionally `URL@ref`) on first start.
+
+The image is rebuilt automatically when ComfyUI releases a new version, or when the Comfier agent or
+VideoHelperSuite changes (checked every 6 hours).
 
 ## Development
 

@@ -2,7 +2,7 @@ name: Build and publish
 
 on:
   schedule:
-    - cron: "17 5 * * *"   # daily: look for a new ComfyUI release
+    - cron: "17 */6 * * *"   # look for a new ComfyUI release or a change to a bundled node
   workflow_dispatch:
     inputs:
       version:
@@ -33,6 +33,9 @@ jobs:
       ref: ${{ steps.v.outputs.ref }}
       build: ${{ steps.v.outputs.build }}
       is_latest: ${{ steps.v.outputs.is_latest }}
+      agent_sha: ${{ steps.v.outputs.agent_sha }}
+      vhs_sha: ${{ steps.v.outputs.vhs_sha }}
+      bundle_id: ${{ steps.v.outputs.bundle_id }}
     steps:
       - uses: docker/login-action@v4
         with:
@@ -53,13 +56,28 @@ jobs:
           else
             version="$latest"
           fi
+
+          # Latest commit touching the bundled nodes; a change here triggers a rebuild.
+          agent_sha=$(gh api "repos/romkey/comfier-ui/commits?path=comfyui/comfier_agent&per_page=1" --jq '.[0].sha')
+          vhs_sha=$(gh api "repos/Kosinkadink/ComfyUI-VideoHelperSuite/commits?per_page=1" --jq '.[0].sha')
+          bundle_id="agent-${agent_sha:0:12}_vhs-${vhs_sha:0:12}"
+
           build=false
           if [ "$FORCE" = "true" ] || [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             build=true
-          elif ! docker buildx imagetools inspect "$IMAGE:$version" >/dev/null 2>&1; then
+          elif ! info=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .}}' 2>/dev/null); then
             build=true
+          else
+            published=$(jq -r '.image["linux/amd64"].config.Labels["comfyui-docker.bundle-id"] // ""' <<<"$info")
+            if [ "$published" != "$bundle_id" ]; then
+              echo "Bundled nodes changed: '$published' -> '$bundle_id'"
+              build=true
+            fi
           fi
           {
+            echo "agent_sha=$agent_sha"
+            echo "vhs_sha=$vhs_sha"
+            echo "bundle_id=$bundle_id"
             echo "version=$version"
             echo "ref=v$version"
             echo "build=$build"
@@ -101,6 +119,9 @@ jobs:
           build-args: |
             TORCH_INDEX_URL=${{ matrix.variant.index }}
             COMFYUI_REF=${{ needs.check.outputs.ref }}
+            COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
+            VHS_REF=${{ needs.check.outputs.vhs_sha }}
+            BUNDLE_ID=${{ needs.check.outputs.bundle_id }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}

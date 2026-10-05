@@ -27,11 +27,65 @@ if [ "$(id -u)" = "0" ]; then
     exec gosu comfy "$0" "$@"
 fi
 
-mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes}
+mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes,cache/huggingface}
 for d in checkpoints clip clip_vision configs controlnet diffusers diffusion_models embeddings \
     gligen hypernetworks loras text_encoders unet upscale_models vae vae_approx; do
     mkdir -p "$DATA_DIR/models/$d"
 done
+
+# Bundled nodes: COMFYUI_BUNDLED_NODES = all (default) | none | comma-separated folder names.
+# They are symlinked into custom_nodes on every start so image updates reach existing volumes.
+# A real (non-symlink) folder of the same name in custom_nodes always wins.
+bundled="${COMFYUI_BUNDLED_NODES:-all}"
+for link in "$DATA_DIR"/custom_nodes/*; do
+    if [ -L "$link" ] && [[ "$(readlink "$link")" == /opt/bundled_nodes/* ]]; then
+        rm -f "$link"
+    fi
+done
+if [ "$bundled" != "none" ]; then
+    for src in /opt/bundled_nodes/*; do
+        [ -d "$src" ] || continue
+        name="$(basename "$src")"
+        if [ "$bundled" != "all" ] && [[ ",${bundled// /}," != *",$name,"* ]]; then
+            continue
+        fi
+        dest="$DATA_DIR/custom_nodes/$name"
+        if [ -e "$dest" ]; then
+            echo "[entrypoint] custom_nodes/$name already exists; not linking the bundled copy"
+        else
+            ln -s "$src" "$dest"
+        fi
+    done
+fi
+
+# Preload extra custom nodes: COMFYUI_PRELOAD_NODES = whitespace/comma/newline-separated git URLs,
+# each optionally pinned as URL@ref. Existing folders are left untouched (use Manager or git to update).
+if [ -n "${COMFYUI_PRELOAD_NODES:-}" ]; then
+    for spec in ${COMFYUI_PRELOAD_NODES//,/ }; do
+        url="${spec%@*}"
+        ref=""
+        # Only treat a trailing @ref as a ref when it is not part of user@host in the URL.
+        if [[ "$spec" == *@* && "${spec##*@}" != *[/:]* ]]; then
+            ref="${spec##*@}"
+        else
+            url="$spec"
+        fi
+        name="$(basename "${url%.git}")"
+        dest="$DATA_DIR/custom_nodes/$name"
+        if [ -e "$dest" ]; then
+            continue
+        fi
+        echo "[entrypoint] Cloning $url ${ref:+(at $ref) }into custom_nodes/$name"
+        if git clone --quiet "$url" "$dest" && { [ -z "$ref" ] || git -C "$dest" checkout --quiet "$ref"; }; then
+            if [ -f "$dest/requirements.txt" ]; then
+                pip install -r "$dest/requirements.txt" || echo "[entrypoint] WARNING: requirements failed for $name"
+            fi
+        else
+            echo "[entrypoint] WARNING: could not clone $url"
+            rm -rf "$dest"
+        fi
+    done
+fi
 
 # Optionally install requirements of custom nodes (e.g. ones added via Manager or git clone).
 if is_true "${COMFYUI_INSTALL_NODE_REQUIREMENTS:-false}"; then

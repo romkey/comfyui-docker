@@ -16,6 +16,8 @@ services:
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: all
     ipc: host
