@@ -42,6 +42,6 @@ VOLUME /data
 EXPOSE 8188
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${COMFYUI_PORT:-8188}/system_stats" >/dev/null || exit 1
+    CMD ["sh", "-c", "curl -fsS http://127.0.0.1:${COMFYUI_PORT:-8188}/system_stats >/dev/null"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
