@@ -24,7 +24,13 @@ upstream project and is not affiliated with this repository.
 | `latest-cpu`, `0.38.0-cpu`   | CPU      | macOS (Docker Desktop), any machine without a GPU                |
 
 Docker on macOS cannot pass the GPU through to containers, so the Mac image runs on CPU. For GPU speed on
-Apple Silicon, run ComfyUI natively (MPS) instead.
+Apple Silicon, run ComfyUI natively (MPS) instead, for example with the official desktop app:
+
+```bash
+brew install --cask comfy
+```
+
+Use the `-cpu` image on a Mac only when you need a CPU-only or reproducible containerized setup.
 
 ## Quick start
 
