@@ -9,6 +9,12 @@ Multi-arch (`linux/amd64`, `linux/arm64`) Docker images for [ComfyUI](https://gi
 A GitHub Actions job checks daily for a new ComfyUI release and publishes an image tagged with the same
 version (without the leading `v`) to `ghcr.io/romkey/comfyui-docker`. `latest` always tracks the newest release.
 
+## AI disclosure
+
+This project was built with the help of AI (Claude, by Anthropic). The Dockerfile, entrypoint script,
+workflows and documentation were AI-generated and reviewed by the maintainer. ComfyUI itself is a separate
+upstream project and is not affiliated with this repository.
+
 ## Image variants
 
 | Tag                          | PyTorch  | Use on                                                           |
