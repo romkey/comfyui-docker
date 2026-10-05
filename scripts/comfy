@@ -1,0 +1,3 @@
+#!/bin/sh
+# comfy-cli pointed at the bundled ComfyUI (its models/custom_nodes are symlinks into the data volume).
+exec /opt/tools/bin/comfy --skip-prompt --workspace="${COMFYUI_DIR:-/opt/ComfyUI}" "$@"

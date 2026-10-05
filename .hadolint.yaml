@@ -1,3 +1,4 @@
 ignored:
   - DL3008   # apt packages intentionally unpinned
   - DL3013   # pip packages intentionally unpinned (versions come from ComfyUI requirements)
+  - DL3006   # FROM runtime-${FLAVOR} is a build-stage alias, not an external image

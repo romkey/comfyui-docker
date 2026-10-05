@@ -35,6 +35,7 @@ jobs:
       is_latest: ${{ steps.v.outputs.is_latest }}
       agent_sha: ${{ steps.v.outputs.agent_sha }}
       vhs_sha: ${{ steps.v.outputs.vhs_sha }}
+      sage_sha: ${{ steps.v.outputs.sage_sha }}
       bundle_id: ${{ steps.v.outputs.bundle_id }}
     steps:
       - uses: docker/login-action@v4
@@ -60,7 +61,8 @@ jobs:
           # Latest commit touching the bundled nodes; a change here triggers a rebuild.
           agent_sha=$(gh api "repos/romkey/comfier-ui/commits?path=comfyui/comfier_agent&per_page=1" --jq '.[0].sha')
           vhs_sha=$(gh api "repos/Kosinkadink/ComfyUI-VideoHelperSuite/commits?per_page=1" --jq '.[0].sha')
-          bundle_id="agent-${agent_sha:0:12}_vhs-${vhs_sha:0:12}"
+          sage_sha=$(gh api "repos/thu-ml/SageAttention/commits?per_page=1" --jq '.[0].sha')
+          bundle_id="agent-${agent_sha:0:12}_vhs-${vhs_sha:0:12}_sage-${sage_sha:0:12}"
 
           build=false
           if [ "$FORCE" = "true" ] || [ "${GITHUB_EVENT_NAME}" = "push" ]; then
@@ -77,6 +79,7 @@ jobs:
           {
             echo "agent_sha=$agent_sha"
             echo "vhs_sha=$vhs_sha"
+            echo "sage_sha=$sage_sha"
             echo "bundle_id=$bundle_id"
             echo "version=$version"
             echo "ref=v$version"
@@ -92,9 +95,10 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - { name: cu130, suffix: "", index: "https://download.pytorch.org/whl/cu130" }
-          - { name: cu128, suffix: "-cu128", index: "https://download.pytorch.org/whl/cu128" }
-          - { name: cpu, suffix: "-cpu", index: "https://download.pytorch.org/whl/cpu" }
+          - { name: cu130, suffix: "", index: "https://download.pytorch.org/whl/cu130", flavor: plain }
+          - { name: cu128, suffix: "-cu128", index: "https://download.pytorch.org/whl/cu128", flavor: plain }
+          - { name: cpu, suffix: "-cpu", index: "https://download.pytorch.org/whl/cpu", flavor: plain }
+          - { name: sage, suffix: "-sage", index: "https://download.pytorch.org/whl/cu130", flavor: sage }
         platform:
           - { arch: amd64, runner: ubuntu-26.04 }
           - { arch: arm64, runner: ubuntu-26.04-arm }
@@ -118,6 +122,8 @@ jobs:
           platforms: linux/${{ matrix.platform.arch }}
           build-args: |
             TORCH_INDEX_URL=${{ matrix.variant.index }}
+            FLAVOR=${{ matrix.variant.flavor }}
+            SAGE_REF=${{ needs.check.outputs.sage_sha }}
             COMFYUI_REF=${{ needs.check.outputs.ref }}
             COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
             VHS_REF=${{ needs.check.outputs.vhs_sha }}
@@ -138,16 +144,20 @@ jobs:
           retention-days: 1
 
   merge:
+    # One variant failing to build must not stop the others from being published.
     needs: [check, build]
+    if: ${{ !cancelled() && needs.check.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         variant:
           - { name: cu130, suffix: "" }
           - { name: cu128, suffix: "-cu128" }
           - { name: cpu, suffix: "-cpu" }
+          - { name: sage, suffix: "-sage" }
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -178,16 +188,27 @@ jobs:
   release:
     # Record each published version as a GitHub release; feeds the version badge in the README.
     needs: [check, merge]
-    if: needs.check.outputs.is_latest == 'true'
+    if: ${{ !cancelled() && needs.check.outputs.build == 'true' && needs.check.outputs.is_latest == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: read
     steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
+          # Only record a release if the main image was actually published.
+          if ! docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "Image $IMAGE:$VERSION is not published; skipping release"
+            exit 0
+          fi
           if ! gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --title "ComfyUI $VERSION" \

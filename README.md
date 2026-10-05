@@ -22,6 +22,13 @@ upstream project and is not affiliated with this repository.
 | `latest`, `0.38.0`           | CUDA 13  | Linux + NVIDIA (driver ≥ 580), DGX Spark (GB10), Jetson Thor     |
 | `latest-cu128`, `0.38.0-cu128` | CUDA 12.8 | Linux + NVIDIA with older drivers (≥ 570)                     |
 | `latest-cpu`, `0.38.0-cpu`   | CPU      | macOS (Docker Desktop), any machine without a GPU                |
+| `latest-sage`, `0.38.0-sage` | CUDA 13 + SageAttention | Blackwell GPUs: DGX Spark (GB10), RTX 50, B200 |
+
+The `-sage` image adds [SageAttention](https://github.com/thu-ml/SageAttention), compiled for compute
+capabilities 10.0, 12.0 and 12.1. With the default `COMFYUI_ATTENTION=auto` it turns on `--use-sage-attention`
+only when it detects one of those GPUs, and otherwise falls back to ComfyUI's default attention. Upstream
+SageAttention doesn't support Jetson Thor (sm_110), so use the default image there. Set
+`COMFYUI_ATTENTION=pytorch` to turn Sage off.
 
 Docker on macOS cannot pass the GPU through to containers, so the Mac image runs on CPU. For GPU speed on
 Apple Silicon, run ComfyUI natively (MPS) instead, for example with the official desktop app:
@@ -90,8 +97,8 @@ A real folder of the same name in `custom_nodes` always wins. Use `COMFYUI_BUNDL
 comma-separated list) to choose which are linked, and `COMFYUI_PRELOAD_NODES` to clone extra nodes (git URLs,
 optionally `URL@ref`) on first start.
 
-The image is rebuilt automatically when ComfyUI releases a new version, or when the Comfier agent or
-VideoHelperSuite changes (checked every 6 hours).
+The image is rebuilt automatically when ComfyUI releases a new version, or when the Comfier agent,
+VideoHelperSuite or SageAttention changes (checked every 6 hours).
 
 ## Development
 

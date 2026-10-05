@@ -125,7 +125,24 @@ esac
 [ -n "${COMFYUI_CUDA_DEVICE:-}" ] && args+=(--cuda-device "$COMFYUI_CUDA_DEVICE")
 [ -n "${COMFYUI_PREVIEW_METHOD:-}" ] && args+=(--preview-method "$COMFYUI_PREVIEW_METHOD")
 [ -n "${COMFYUI_RESERVE_VRAM:-}" ] && args+=(--reserve-vram "$COMFYUI_RESERVE_VRAM")
-[ -n "${COMFYUI_ATTENTION:-}" ] && args+=("--use-${COMFYUI_ATTENTION}-attention")
+
+# Attention backend: pytorch | split | quad | sage | flash | auto (auto = SageAttention if built in and the GPU is supported).
+attention="${COMFYUI_ATTENTION:-}"
+if [ "$attention" = "auto" ]; then
+    attention="$(python - <<'PY' 2>/dev/null || true
+import os, torch
+try:
+    import sageattention  # noqa: F401
+    supported = {a.split("+")[0] for a in os.environ.get("SAGE_ARCHS", "").replace(",", ";").split(";") if a}
+    major, minor = torch.cuda.get_device_capability()
+    print("sage" if f"{major}.{minor}" in supported else "")
+except Exception:
+    print("")
+PY
+)"
+    [ -n "$attention" ] && echo "[entrypoint] SageAttention supports this GPU; enabling it"
+fi
+[ -n "$attention" ] && args+=("--use-${attention}-attention")
 [ -n "${COMFYUI_CACHE_LRU:-}" ] && args+=(--cache-lru "$COMFYUI_CACHE_LRU")
 [ -n "${COMFYUI_MAX_UPLOAD_SIZE:-}" ] && args+=(--max-upload-size "$COMFYUI_MAX_UPLOAD_SIZE")
 [ -n "${COMFYUI_CORS_ORIGIN:-}" ] && args+=(--enable-cors-header "$COMFYUI_CORS_ORIGIN")

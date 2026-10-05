@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim-bookworm
+
+# Image flavor: "plain" (default) or "sage" (adds SageAttention compiled for Blackwell GPUs; needs a CUDA torch index).
+# BuildKit only builds the stages the chosen flavor needs, so plain builds never touch the CUDA toolkit stage.
+ARG FLAVOR=plain
+
+FROM python:3.12-slim-bookworm AS runtime
 
 # Which PyTorch wheel index to use:
 #   cu130 (default) - CUDA 13: Blackwell, DGX Spark (GB10), Jetson Thor, recent drivers (>= 580)
@@ -71,9 +76,8 @@ RUN umask 000 && pip install -r /opt/bundled_nodes/ComfyUI-VideoHelperSuite/requ
 RUN umask 000 \
     && python -m venv /opt/tools \
     && /opt/tools/bin/pip install "huggingface_hub[cli]" comfy-cli \
-    && ln -s /opt/tools/bin/hf /usr/local/bin/hf \
-    && printf '#!/bin/sh\nexec /opt/tools/bin/comfy --skip-prompt --workspace="${COMFYUI_DIR:-/opt/ComfyUI}" "$@"\n' > /usr/local/bin/comfy \
-    && chmod +x /usr/local/bin/comfy
+    && ln -s /opt/tools/bin/hf /usr/local/bin/hf
+COPY --chmod=755 scripts/comfy /usr/local/bin/comfy
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
@@ -93,3 +97,58 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD ["sh", "-c", "curl -fsS http://127.0.0.1:${COMFYUI_PORT:-8188}/system_stats >/dev/null"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ---------------------------------------------------------------------------
+# SageAttention flavor
+# ---------------------------------------------------------------------------
+FROM runtime AS sage-builder
+# CUDA toolkit used only to compile; Debian 12's arm64 (sbsa) repo starts at 13.1, so use 13.1 for both arches.
+ARG CUDA_VERSION=13.1
+ARG SAGE_REF=HEAD
+# Blackwell: 10.0 = B200/GB200, 12.0 = RTX 50, 12.1 = DGX Spark (GB10). Upstream does not support 11.0 (Jetson Thor).
+ARG SAGE_ARCHS="10.0;12.0;12.1"
+# nvcc on these kernels needs ~3-4 GB per job; keep this low on small runners.
+ARG MAX_JOBS=2
+ARG NVCC_THREADS=2
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN case "$(dpkg --print-architecture)" in amd64) repo=x86_64 ;; arm64) repo=sbsa ;; *) exit 1 ;; esac \
+    && curl -fsSLO "https://developer.download.nvidia.com/compute/cuda/repos/debian12/${repo}/cuda-keyring_1.1-1_all.deb" \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "cuda-toolkit-${CUDA_VERSION//./-}" \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CUDA_HOME=/usr/local/cuda-${CUDA_VERSION}
+RUN git init -q /src/sage \
+    && git -C /src/sage remote add origin https://github.com/thu-ml/SageAttention.git \
+    && git -C /src/sage fetch -q --depth 1 origin "$SAGE_REF" \
+    && git -C /src/sage checkout -q FETCH_HEAD
+
+WORKDIR /src/sage
+# Current PyTorch headers require C++20 but SageAttention's setup.py pins C++17.
+ARG CXX_STD=c++20
+RUN sed -i -e "s/-std=c++17/-std=${CXX_STD}/g" -e "s/--threads=8/--threads=${NVCC_THREADS}/" setup.py \
+    && pip install ninja setuptools wheel packaging \
+    && TORCH_CUDA_ARCH_LIST="$SAGE_ARCHS" EXT_PARALLEL="${MAX_JOBS}" \
+       pip wheel --no-build-isolation --no-deps -w /wheels .
+
+FROM runtime AS runtime-sage
+ARG CUDA_VERSION=13.1
+ARG SAGE_ARCHS="10.0;12.0;12.1"
+COPY --from=sage-builder /wheels /tmp/wheels
+# Triton's bundled ptxas predates sm_121 (DGX Spark); point it at the CUDA toolkit's ptxas.
+COPY --from=sage-builder /usr/local/cuda-${CUDA_VERSION}/bin/ptxas /usr/local/bin/ptxas-cuda
+RUN umask 000 \
+    && pip install /tmp/wheels/*.whl triton \
+    && rm -rf /tmp/wheels \
+    && python -c "import sageattention"
+# COMFYUI_ATTENTION=auto: the entrypoint enables --use-sage-attention only on GPUs this build supports.
+ENV TRITON_PTXAS_PATH=/usr/local/bin/ptxas-cuda \
+    SAGE_ARCHS=${SAGE_ARCHS} \
+    COMFYUI_ATTENTION=auto
+
+FROM runtime AS runtime-plain
+
+FROM runtime-${FLAVOR} AS final
