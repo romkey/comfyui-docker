@@ -1,0 +1,174 @@
+name: Build and publish
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # daily: look for a new ComfyUI release
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ComfyUI version to build (e.g. 0.38.0); empty = latest release"
+        required: false
+        default: ""
+      force:
+        description: "Rebuild even if the image tag already exists"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - scripts/**
+      - .github/workflows/release.yml
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      ref: ${{ steps.v.outputs.ref }}
+      build: ${{ steps.v.outputs.build }}
+      is_latest: ${{ steps.v.outputs.is_latest }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          latest_tag=$(gh api repos/Comfy-Org/ComfyUI/releases/latest --jq .tag_name)
+          latest="${latest_tag#v}"
+          if [ -n "$REQUESTED" ]; then
+            version="${REQUESTED#v}"
+          else
+            version="$latest"
+          fi
+          build=false
+          if [ "$FORCE" = "true" ] || [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            build=true
+          elif ! docker buildx imagetools inspect "$IMAGE:$version" >/dev/null 2>&1; then
+            build=true
+          fi
+          {
+            echo "version=$version"
+            echo "ref=v$version"
+            echo "build=$build"
+            echo "is_latest=$([ "$version" = "$latest" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          echo "ComfyUI $version (latest=$latest) build=$build"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - { name: cu130, suffix: "", index: "https://download.pytorch.org/whl/cu130" }
+          - { name: cu128, suffix: "-cu128", index: "https://download.pytorch.org/whl/cu128" }
+          - { name: cpu, suffix: "-cpu", index: "https://download.pytorch.org/whl/cpu" }
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform.arch }}
+          build-args: |
+            TORCH_INDEX_URL=${{ matrix.variant.index }}
+            COMFYUI_REF=${{ needs.check.outputs.ref }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.variant.name }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        variant:
+          - { name: cu130, suffix: "" }
+          - { name: cu128, suffix: "-cu128" }
+          - { name: cpu, suffix: "-cpu" }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.variant.name }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch manifests
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          IS_LATEST: ${{ needs.check.outputs.is_latest }}
+          SUFFIX: ${{ matrix.variant.suffix }}
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tags=(-t "$IMAGE:${VERSION}${SUFFIX}")
+          if [ "$IS_LATEST" = "true" ]; then
+            tags+=(-t "$IMAGE:latest${SUFFIX}")
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create "${tags[@]}" $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:${VERSION}${SUFFIX}"
+
+  release:
+    # Record each published version as a GitHub release; feeds the version badge in the README.
+    needs: [check, merge]
+    if: needs.check.outputs.is_latest == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if ! gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "ComfyUI $VERSION" \
+              --notes "Docker image for [ComfyUI $VERSION](https://github.com/Comfy-Org/ComfyUI/releases/tag/v$VERSION): \`docker pull ghcr.io/$GITHUB_REPOSITORY:$VERSION\`"
+          fi

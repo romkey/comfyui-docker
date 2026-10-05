@@ -1,0 +1,19 @@
+# macOS (Docker Desktop has no GPU passthrough) and other CPU-only hosts.
+# Uses the -cpu image variant. For real GPU speed on a Mac, run ComfyUI natively (MPS) instead.
+#   docker compose -f docker-compose.cpu.yml up -d
+services:
+  comfyui:
+    image: ghcr.io/romkey/comfyui-docker:${COMFYUI_TAG:-latest}-cpu
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "${COMFYUI_HOST_PORT:-8188}:8188"
+    volumes:
+      - ${COMFYUI_DATA:-./data}:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      COMFYUI_CPU: "true"

@@ -1,0 +1,28 @@
+# NVIDIA GPU (Linux x86_64, DGX Spark, Jetson Thor). Needs the NVIDIA Container Toolkit.
+# For macOS / CPU-only, use docker-compose.cpu.yml instead.
+#   cp .env.example .env && docker compose up -d
+services:
+  comfyui:
+    image: ghcr.io/romkey/comfyui-docker:${COMFYUI_TAG:-latest}
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "${COMFYUI_HOST_PORT:-8188}:8188"
+    volumes:
+      - ${COMFYUI_DATA:-./data}:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: all
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

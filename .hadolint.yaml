@@ -1,0 +1,3 @@
+ignored:
+  - DL3008   # apt packages intentionally unpinned
+  - DL3013   # pip packages intentionally unpinned (versions come from ComfyUI requirements)
