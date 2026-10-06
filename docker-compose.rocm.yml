@@ -1,0 +1,28 @@
+# AMD Strix Halo (Ryzen AI Max, Radeon 8000S iGPU, gfx1151) on Linux. x86_64 only.
+# Needs the amdgpu kernel driver on the host (no ROCm install required; the image bundles it).
+#   docker compose -f docker-compose.rocm.yml up -d
+# See "AMD Strix Halo" in the README for BIOS/kernel memory settings.
+services:
+  comfyui:
+    image: ghcr.io/romkey/comfyui-docker:${COMFYUI_TAG:-latest}-rocm-gfx1151
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "${COMFYUI_HOST_PORT:-8188}:8188"
+    volumes:
+      - ${COMFYUI_DATA:-./data}:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    # ROCm needs these; the entrypoint adds the unprivileged user to the groups that own the device nodes.
+    security_opt:
+      - seccomp:unconfined
+    ipc: host

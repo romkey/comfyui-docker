@@ -94,15 +94,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - { name: cu130, suffix: "", index: "https://download.pytorch.org/whl/cu130", flavor: plain }
-          - { name: cu128, suffix: "-cu128", index: "https://download.pytorch.org/whl/cu128", flavor: plain }
-          - { name: cpu, suffix: "-cpu", index: "https://download.pytorch.org/whl/cpu", flavor: plain }
-          - { name: sage, suffix: "-sage", index: "https://download.pytorch.org/whl/cu130", flavor: sage }
-        platform:
+        variant: [cu130, cu128, cpu, sage, rocm-gfx1151]
+        arch: [amd64, arm64]
+        include:
+          - { variant: cu130, index: "https://download.pytorch.org/whl/cu130", flavor: plain }
+          - { variant: cu128, index: "https://download.pytorch.org/whl/cu128", flavor: plain }
+          - { variant: cpu, index: "https://download.pytorch.org/whl/cpu", flavor: plain }
+          - { variant: sage, index: "https://download.pytorch.org/whl/cu130", flavor: sage }
+          - { variant: rocm-gfx1151, index: "https://repo.amd.com/rocm/whl/gfx1151/", flavor: rocm }
           - { arch: amd64, runner: ubuntu-26.04 }
           - { arch: arm64, runner: ubuntu-26.04-arm }
-    runs-on: ${{ matrix.platform.runner }}
+        exclude:
+          # AMD Strix Halo is x86_64 only.
+          - { variant: rocm-gfx1151, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -119,18 +124,18 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/${{ matrix.platform.arch }}
+          platforms: linux/${{ matrix.arch }}
           build-args: |
-            TORCH_INDEX_URL=${{ matrix.variant.index }}
-            FLAVOR=${{ matrix.variant.flavor }}
+            TORCH_INDEX_URL=${{ matrix.index }}
+            FLAVOR=${{ matrix.flavor }}
             SAGE_REF=${{ needs.check.outputs.sage_sha }}
             COMFYUI_REF=${{ needs.check.outputs.ref }}
             COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
             VHS_REF=${{ needs.check.outputs.vhs_sha }}
             BUNDLE_ID=${{ needs.check.outputs.bundle_id }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}-${{ matrix.platform.arch }}
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.arch }}
       - name: Export digest
         run: |
           mkdir -p "${RUNNER_TEMP}/digests"
@@ -138,7 +143,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
       - uses: actions/upload-artifact@v7
         with:
-          name: digests-${{ matrix.variant.name }}-${{ matrix.platform.arch }}
+          name: digests-${{ matrix.variant }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -158,6 +163,7 @@ jobs:
           - { name: cu128, suffix: "-cu128" }
           - { name: cpu, suffix: "-cpu" }
           - { name: sage, suffix: "-sage" }
+          - { name: rocm-gfx1151, suffix: "-rocm-gfx1151" }
     steps:
       - uses: actions/download-artifact@v8
         with:

@@ -23,11 +23,24 @@ if [ "$(id -u)" = "0" ]; then
     if is_true "${COMFYUI_CHOWN_DATA:-false}"; then
         chown -R comfy:comfy "$DATA_DIR"
     fi
+    # gosu drops the container's supplementary groups, so grant the unprivileged user access to GPU device
+    # nodes (AMD /dev/kfd and /dev/dri/*) by adding it to whichever groups own them.
+    for dev in /dev/kfd /dev/dri/*; do
+        [ -e "$dev" ] || continue
+        dev_gid="$(stat -c %g "$dev")"
+        [ "$dev_gid" = "0" ] && continue
+        dev_group="$(getent group "$dev_gid" | cut -d: -f1 || true)"
+        if [ -z "$dev_group" ]; then
+            dev_group="gpu$dev_gid"
+            groupadd -g "$dev_gid" "$dev_group"
+        fi
+        usermod -aG "$dev_group" comfy
+    done
     export HOME=/home/comfy
     exec gosu comfy "$0" "$@"
 fi
 
-mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes,cache/huggingface}
+mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes,cache/huggingface,cache/miopen}
 for d in checkpoints clip clip_vision configs controlnet diffusers diffusion_models embeddings \
     gligen hypernetworks loras text_encoders unet upscale_models vae vae_approx; do
     mkdir -p "$DATA_DIR/models/$d"
@@ -109,7 +122,10 @@ if [ "$cpu" = "auto" ]; then
     if python -c 'import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)' 2>/dev/null; then
         cpu=false
     else
-        echo "[entrypoint] No CUDA device available; running on CPU (set COMFYUI_CPU=false to disable this fallback)"
+        echo "[entrypoint] No GPU available; running on CPU (set COMFYUI_CPU=false to disable this fallback)"
+        if python -c 'import sys, torch; sys.exit(0 if torch.version.hip else 1)' 2>/dev/null; then
+            echo "[entrypoint] This is a ROCm build: pass /dev/kfd and /dev/dri into the container (see docker-compose.rocm.yml)"
+        fi
         cpu=true
     fi
 fi
@@ -158,6 +174,9 @@ is_true "${COMFYUI_DISABLE_SMART_MEMORY:-false}" && args+=(--disable-smart-memor
 is_true "${COMFYUI_DISABLE_CUDA_MALLOC:-false}" && args+=(--disable-cuda-malloc)
 is_true "${COMFYUI_DETERMINISTIC:-false}" && args+=(--deterministic)
 is_true "${COMFYUI_HIGH_RAM:-false}" && args+=(--high-ram)
+is_true "${COMFYUI_DISABLE_MMAP:-false}" && args+=(--disable-mmap)
+is_true "${COMFYUI_BF16_VAE:-false}" && args+=(--bf16-vae)
+is_true "${COMFYUI_CACHE_NONE:-false}" && args+=(--cache-none)
 is_true "${COMFYUI_VERBOSE_DEBUG:-false}" && args+=(--verbose DEBUG)
 
 # Anything else: free-form extra arguments (word-split on purpose).

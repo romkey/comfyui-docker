@@ -23,12 +23,40 @@ upstream project and is not affiliated with this repository.
 | `latest-cu128`, `0.38.0-cu128` | CUDA 12.8 | Linux + NVIDIA with older drivers (≥ 570)                     |
 | `latest-cpu`, `0.38.0-cpu`   | CPU      | macOS (Docker Desktop), any machine without a GPU                |
 | `latest-sage`, `0.38.0-sage` | CUDA 13 + SageAttention | Blackwell GPUs: DGX Spark (GB10), RTX 50, B200 |
+| `latest-rocm-gfx1151`, `0.38.0-rocm-gfx1151` | ROCm 7.13 | AMD Strix Halo (Ryzen AI Max); x86_64 only |
 
 The `-sage` image adds [SageAttention](https://github.com/thu-ml/SageAttention), compiled for compute
 capabilities 10.0, 12.0 and 12.1. With the default `COMFYUI_ATTENTION=auto` it turns on `--use-sage-attention`
 only when it detects one of those GPUs, and otherwise falls back to ComfyUI's default attention. Upstream
 SageAttention doesn't support Jetson Thor (sm_110), so use the default image there. Set
 `COMFYUI_ATTENTION=pytorch` to turn Sage off.
+
+### AMD Strix Halo
+
+Strix Halo (Ryzen AI Max, gfx1151) uses ROCm, so it needs its own image: `-rocm-gfx1151` (x86_64 only). It
+installs PyTorch from [AMD's gfx1151 wheel index](https://repo.amd.com/rocm/whl/gfx1151/), which bundles the ROCm
+libraries, so the host only needs the amdgpu kernel driver.
+
+```bash
+docker compose -f docker-compose.rocm.yml up -d
+```
+
+The compose file passes `/dev/kfd` and `/dev/dri` through and sets `seccomp:unconfined` and `ipc: host`, which
+ROCm needs. The entrypoint adds the container user to whichever groups own those device nodes, so no
+`group_add` is required. The image defaults to settings the Strix Halo community reports as necessary for
+unified-memory APUs: `HSA_ENABLE_SDMA=0`, `HSA_USE_SVM=0`, `--disable-mmap` and `--bf16-vae`. Override any of them
+in `.env` (see [`.env.example`](.env.example)); `COMFYUI_CACHE_NONE=true` also helps when memory is tight.
+
+Host setup matters more than the container: in the BIOS give the iGPU only a small dedicated allocation and let
+it use system memory (GTT), and raise the kernel's GTT limit (`amdgpu.gttsize`, `ttm.pages_limit`) to use most of
+your RAM. See the [Strix Halo setup guide](https://strix-halo-toolboxes.com/) for current values.
+
+Other AMD GPUs have their own wheel index (`gfx1150`, `gfx110X-all`, `gfx120X-all`, ...). To build for one:
+
+```bash
+docker build -t comfyui-rocm --build-arg FLAVOR=rocm \
+  --build-arg TORCH_INDEX_URL=https://repo.amd.com/rocm/whl/gfx120X-all/ .
+```
 
 Docker on macOS cannot pass the GPU through to containers, so the Mac image runs on CPU. For GPU speed on
 Apple Silicon, run ComfyUI natively (MPS) instead, for example with the official desktop app:

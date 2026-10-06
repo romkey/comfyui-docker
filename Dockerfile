@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Image flavor: "plain" (default) or "sage" (adds SageAttention compiled for Blackwell GPUs; needs a CUDA torch index).
+# Image flavor: "plain" (default), "sage" (adds SageAttention compiled for Blackwell GPUs; needs a CUDA torch index)
+# or "rocm" (AMD Strix Halo defaults; use with an AMD ROCm TORCH_INDEX_URL).
 # BuildKit only builds the stages the chosen flavor needs, so plain builds never touch the CUDA toolkit stage.
 ARG FLAVOR=plain
 
@@ -10,6 +11,8 @@ FROM python:3.12-slim-bookworm AS runtime
 #   cu130 (default) - CUDA 13: Blackwell, DGX Spark (GB10), Jetson Thor, recent drivers (>= 580)
 #   cu128           - CUDA 12.8: older NVIDIA drivers (>= 570)
 #   cpu             - CPU only (smallest; use on macOS / Docker Desktop, which has no GPU passthrough)
+#   https://repo.amd.com/rocm/whl/gfx1151/ - AMD Strix Halo (Ryzen AI Max); pair with FLAVOR=rocm. Other AMD
+#                     families have their own index there (gfx1150, gfx110X-all, gfx120X-all, ...). x86_64 only.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 # Git tag/branch/commit of ComfyUI to build
 ARG COMFYUI_REF=master
@@ -148,6 +151,22 @@ RUN umask 000 \
 ENV TRITON_PTXAS_PATH=/usr/local/bin/ptxas-cuda \
     SAGE_ARCHS=${SAGE_ARCHS} \
     COMFYUI_ATTENTION=auto
+
+# ---------------------------------------------------------------------------
+# AMD ROCm flavor (Strix Halo, gfx1151). Defaults are community-reported fixes for unified-memory APUs;
+# all can be overridden at run time.
+# ---------------------------------------------------------------------------
+FROM runtime AS runtime-rocm
+# HSA_OVERRIDE_GFX_VERSION pins the ISA; SDMA/SVM off avoid GPU ring timeouts and corrupted VAE output on
+# unified memory. mmap off avoids very slow/hanging loads above 64 GB; bf16 VAE avoids OOM while decoding.
+# The MIOpen kernel cache goes on the data volume so tuning survives container restarts.
+ENV HSA_OVERRIDE_GFX_VERSION=11.5.1 \
+    HSA_ENABLE_SDMA=0 \
+    HSA_USE_SVM=0 \
+    MIOPEN_USER_DB_PATH=/data/cache/miopen \
+    MIOPEN_CUSTOM_CACHE_DIR=/data/cache/miopen \
+    COMFYUI_DISABLE_MMAP=true \
+    COMFYUI_BF16_VAE=true
 
 FROM runtime AS runtime-plain
 
