@@ -9,6 +9,12 @@ Multi-arch (`linux/amd64`, `linux/arm64`) Docker images for [ComfyUI](https://gi
 A GitHub Actions job checks every few hours for a new ComfyUI release and publishes an image tagged with the same
 version (without the leading `v`) to `ghcr.io/romkey/comfyui-docker`. `latest` always tracks the newest release.
 
+The image is also rebuilt when the bundled nodes or this repository change, so each build gets an extra,
+immutable tag with its UTC build time appended, e.g. `0.38.0-20261007082503` (and `0.38.0-20261007082503-cpu`
+for the variants). `0.38.0` points at the newest build of that version; pin a build tag to keep an exact image.
+Every build has a matching [GitHub release](https://github.com/romkey/comfyui-docker/releases) (`v0.38.0-20261007082503`)
+listing the bundled node commits, and the build time is in the image's `comfyui-docker.build-id` label.
+
 ## AI disclosure
 
 This project was built with the help of AI (Claude, by Anthropic). The Dockerfile, entrypoint script,
@@ -269,6 +275,12 @@ docker build -t comfyui-xpu --build-arg FLAVOR=xpu \
   --build-arg BASE_IMAGE=python:3.12-slim-trixie \
   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/xpu .
 ```
+
+`TORCH_VERSION` pins the exact torch build (e.g. `2.14.1+cu130`); left empty, the latest on the index is used.
+`FLAVOR=sage` compiles SageAttention locally (slow: it installs the CUDA toolkit and builds the kernels). To reuse a
+compiled wheel instead, pass `--build-arg SAGE_DIST=<image>` with an image built from the `sage-dist` target.
+CI does this: it publishes one `sage-dist` image per SageAttention commit, torch version and architecture, so
+SageAttention is only recompiled when one of those changes.
 
 The Intel driver versions are pinned in the Dockerfile (`NEO_VERSION`, `IGC_VERSION`, `LEVEL_ZERO_VERSION` and
 their checksums). Bump them together from the

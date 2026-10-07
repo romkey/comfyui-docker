@@ -7,28 +7,17 @@
 ARG FLAVOR=plain
 # Intel's GPU driver packages need glibc >= 2.38, so the xpu flavor builds on python:3.12-slim-trixie.
 ARG BASE_IMAGE=python:3.12-slim-bookworm
+# Where the sage flavor gets its compiled SageAttention wheel: the sage-dist stage below (compiles it), or a
+# prebuilt sage-dist image. CI publishes one per SageAttention/torch/arch combination so it compiles only once.
+ARG SAGE_DIST=sage-dist
 
 FROM ${BASE_IMAGE} AS runtime
 
-# Which PyTorch wheel index to use:
-#   cu130 (default) - CUDA 13: Blackwell, DGX Spark (GB10), Jetson Thor, recent drivers (>= 580)
-#   cu128           - CUDA 12.8: older NVIDIA drivers (>= 570)
-#   cpu             - CPU only (smallest; use on macOS / Docker Desktop, which has no GPU passthrough)
-#   https://repo.amd.com/rocm/whl/gfx1151/ - AMD Strix Halo (Ryzen AI Max); pair with FLAVOR=rocm. Other AMD
-#                     families have their own index there (gfx1150, gfx110X-all, gfx120X-all, ...). x86_64 only.
-#   xpu             - Intel Arc (Battlemage B580, Arc Pro B70, Alchemist); pair with FLAVOR=xpu. x86_64 only.
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
-# Git tag/branch/commit of ComfyUI to build
-ARG COMFYUI_REF=master
-# Bundled custom nodes: commit SHAs (or HEAD). CI passes the latest SHAs so a change upstream triggers a rebuild.
-ARG COMFIER_AGENT_REF=HEAD
-ARG VHS_REF=HEAD
-# Identifies what is bundled in this image; CI compares it to decide whether to rebuild.
-ARG BUNDLE_ID=dev
+# Build args are declared just before the step that uses them: a changed value invalidates the cache for every
+# later RUN, so what changes most often (ComfyUI, the bundled nodes) comes last.
 
 LABEL org.opencontainers.image.source="https://github.com/romkey/comfyui-docker" \
-      org.opencontainers.image.licenses="MIT" \
-      comfyui-docker.bundle-id="$BUNDLE_ID"
+      org.opencontainers.image.licenses="MIT"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -40,14 +29,35 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         aria2 build-essential ca-certificates curl ffmpeg git gosu libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 --shell /bin/bash comfy \
+    && mkdir -p /data && chown comfy:comfy /data
 
+# CLI tools in their own venv so their dependencies can't conflict with ComfyUI's.
+RUN umask 000 \
+    && python -m venv /opt/tools \
+    && /opt/tools/bin/pip install "huggingface_hub[cli]" comfy-cli \
+    && ln -s /opt/tools/bin/hf /usr/local/bin/hf
+
+# Which PyTorch wheel index to use:
+#   cu130 (default) - CUDA 13: Blackwell, DGX Spark (GB10), Jetson Thor, recent drivers (>= 580)
+#   cu128           - CUDA 12.8: older NVIDIA drivers (>= 570)
+#   cpu             - CPU only (smallest; use on macOS / Docker Desktop, which has no GPU passthrough)
+#   https://repo.amd.com/rocm/whl/gfx1151/ - AMD Strix Halo (Ryzen AI Max); pair with FLAVOR=rocm. Other AMD
+#                     families have their own index there (gfx1150, gfx110X-all, gfx120X-all, ...). x86_64 only.
+#   xpu             - Intel Arc (Battlemage B580, Arc Pro B70, Alchemist); pair with FLAVOR=xpu. x86_64 only.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+# Exact torch version (e.g. 2.14.1+cu130); empty = latest on the index. CI pins it so a cached layer never
+# holds a stale torch and the sage wheel is built against the same version.
+ARG TORCH_VERSION=
 # umask 000: the venv must stay writable by whatever PUID the container runs as, so ComfyUI-Manager and
 # custom-node installers can pip install at runtime (and without a recursive chown that would double the layer).
 RUN umask 000 \
     && python -m venv "$VIRTUAL_ENV" \
-    && pip install torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
+    && pip install "torch${TORCH_VERSION:+==$TORCH_VERSION}" torchvision torchaudio --index-url "$TORCH_INDEX_URL"
 
+# Git tag/branch/commit of ComfyUI to build
+ARG COMFYUI_REF=master
 RUN git clone --depth 1 --branch "$COMFYUI_REF" https://github.com/Comfy-Org/ComfyUI.git /opt/ComfyUI
 
 WORKDIR /opt/ComfyUI
@@ -63,33 +73,29 @@ RUN umask 000 \
 # (web/extensions is writable because older custom nodes install their JS there.)
 
 # Bundled custom nodes live outside /data (a volume) and are symlinked into custom_nodes at start.
-# Each is fetched at an exact ref (SHA or HEAD) so the image is reproducible.
+# Each is fetched at an exact ref (SHA or HEAD) so the image is reproducible. CI passes the latest SHAs so a
+# change upstream triggers a rebuild.
+ARG VHS_REF=HEAD
 RUN mkdir -p /opt/bundled_nodes \
-    && git -C /opt/bundled_nodes init -q comfier-src \
+    && git -C /opt/bundled_nodes init -q ComfyUI-VideoHelperSuite \
+    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite remote add origin https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
+    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite fetch -q --depth 1 origin "$VHS_REF" \
+    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite checkout -q FETCH_HEAD \
+    && rm -rf /opt/bundled_nodes/ComfyUI-VideoHelperSuite/.git \
+    && umask 000 \
+    && pip install -r /opt/bundled_nodes/ComfyUI-VideoHelperSuite/requirements.txt
+
+ARG COMFIER_AGENT_REF=HEAD
+RUN git -C /opt/bundled_nodes init -q comfier-src \
     && git -C /opt/bundled_nodes/comfier-src remote add origin https://github.com/romkey/comfier-ui.git \
     && git -C /opt/bundled_nodes/comfier-src sparse-checkout set comfyui/comfier_agent \
     && git -C /opt/bundled_nodes/comfier-src fetch -q --depth 1 origin "$COMFIER_AGENT_REF" \
     && git -C /opt/bundled_nodes/comfier-src checkout -q FETCH_HEAD \
     && mv /opt/bundled_nodes/comfier-src/comfyui/comfier_agent /opt/bundled_nodes/comfier_agent \
-    && rm -rf /opt/bundled_nodes/comfier-src \
-    && git -C /opt/bundled_nodes init -q ComfyUI-VideoHelperSuite \
-    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite remote add origin https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
-    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite fetch -q --depth 1 origin "$VHS_REF" \
-    && git -C /opt/bundled_nodes/ComfyUI-VideoHelperSuite checkout -q FETCH_HEAD \
-    && rm -rf /opt/bundled_nodes/ComfyUI-VideoHelperSuite/.git
-RUN umask 000 && pip install -r /opt/bundled_nodes/ComfyUI-VideoHelperSuite/requirements.txt
+    && rm -rf /opt/bundled_nodes/comfier-src
 
-# CLI tools in their own venv so their dependencies can't conflict with ComfyUI's.
-RUN umask 000 \
-    && python -m venv /opt/tools \
-    && /opt/tools/bin/pip install "huggingface_hub[cli]" comfy-cli \
-    && ln -s /opt/tools/bin/hf /usr/local/bin/hf
 COPY --chmod=755 scripts/comfy /usr/local/bin/comfy
-
-COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh \
-    && useradd --create-home --uid 1000 --shell /bin/bash comfy \
-    && mkdir -p /data && chown comfy:comfy /data
+COPY --chmod=755 scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Hugging Face downloads (hf CLI, node downloads) are cached on the data volume.
 # Pass HF_TOKEN and HF_ENDPOINT at run time; they are deliberately not set here.
@@ -108,45 +114,69 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 # ---------------------------------------------------------------------------
 # SageAttention flavor
 # ---------------------------------------------------------------------------
-FROM runtime AS sage-builder
+# >>> sage-dist: CI keys the prebuilt wheel image on the text between these markers (plus SAGE_REF, torch,
+# base image and arch), so editing anything else in this file never recompiles SageAttention.
+# The builder deliberately does not start from runtime: only torch, CUDA and SageAttention itself matter.
+FROM ${BASE_IMAGE} AS sage-builder
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 # CUDA toolkit used only to compile; Debian 12's arm64 (sbsa) repo starts at 13.1, so use 13.1 for both arches.
 ARG CUDA_VERSION=13.1
-ARG SAGE_REF=HEAD
-# Blackwell: 10.0 = B200/GB200, 12.0 = RTX 50, 12.1 = DGX Spark (GB10). Upstream does not support 11.0 (Jetson Thor).
-ARG SAGE_ARCHS="10.0;12.0;12.1"
-# nvcc on these kernels needs ~3-4 GB per job; keep this low on small runners.
-ARG MAX_JOBS=2
-ARG NVCC_THREADS=2
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN case "$(dpkg --print-architecture)" in amd64) repo=x86_64 ;; arm64) repo=sbsa ;; *) exit 1 ;; esac \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl git \
     && curl -fsSLO "https://developer.download.nvidia.com/compute/cuda/repos/debian12/${repo}/cuda-keyring_1.1-1_all.deb" \
     && dpkg -i cuda-keyring_1.1-1_all.deb \
     && rm cuda-keyring_1.1-1_all.deb \
     && apt-get update \
     && apt-get install -y --no-install-recommends "cuda-toolkit-${CUDA_VERSION//./-}" \
     && rm -rf /var/lib/apt/lists/*
-
 ENV CUDA_HOME=/usr/local/cuda-${CUDA_VERSION}
+
+# Must match the torch the runtime installs (same index and version), or the extension won't load.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG TORCH_VERSION=
+RUN python -m venv "$VIRTUAL_ENV" \
+    && pip install "torch${TORCH_VERSION:+==$TORCH_VERSION}" --index-url "$TORCH_INDEX_URL" \
+    && pip install ninja setuptools wheel packaging
+
+ARG SAGE_REF=HEAD
 RUN git init -q /src/sage \
     && git -C /src/sage remote add origin https://github.com/thu-ml/SageAttention.git \
     && git -C /src/sage fetch -q --depth 1 origin "$SAGE_REF" \
     && git -C /src/sage checkout -q FETCH_HEAD
 
 WORKDIR /src/sage
+# Blackwell: 10.0 = B200/GB200, 12.0 = RTX 50, 12.1 = DGX Spark (GB10). Upstream does not support 11.0 (Jetson Thor).
+# Keep in sync with runtime-sage.
+ARG SAGE_ARCHS="10.0;12.0;12.1"
+# nvcc on these kernels needs ~3-4 GB per job; keep this low on small runners.
+ARG MAX_JOBS=2
+ARG NVCC_THREADS=2
 # Current PyTorch headers require C++20 but SageAttention's setup.py pins C++17.
 ARG CXX_STD=c++20
 RUN sed -i -e "s/-std=c++17/-std=${CXX_STD}/g" -e "s/--threads=8/--threads=${NVCC_THREADS}/" setup.py \
-    && pip install ninja setuptools wheel packaging \
     && TORCH_CUDA_ARCH_LIST="$SAGE_ARCHS" EXT_PARALLEL="${MAX_JOBS}" \
        pip wheel --no-build-isolation --no-deps -w /wheels .
 
-FROM runtime AS runtime-sage
+# Just the build output: the wheel, and the toolkit's ptxas (Triton's bundled one predates sm_121, DGX Spark).
+FROM scratch AS sage-dist
 ARG CUDA_VERSION=13.1
+COPY --from=sage-builder /wheels /wheels
+COPY --from=sage-builder /usr/local/cuda-${CUDA_VERSION}/bin/ptxas /bin/ptxas
+# <<< sage-dist
+
+FROM ${SAGE_DIST} AS sage-prebuilt
+
+FROM runtime AS runtime-sage
 ARG SAGE_ARCHS="10.0;12.0;12.1"
-COPY --from=sage-builder /wheels /tmp/wheels
-# Triton's bundled ptxas predates sm_121 (DGX Spark); point it at the CUDA toolkit's ptxas.
-COPY --from=sage-builder /usr/local/cuda-${CUDA_VERSION}/bin/ptxas /usr/local/bin/ptxas-cuda
+COPY --from=sage-prebuilt /wheels /tmp/wheels
+COPY --from=sage-prebuilt /bin/ptxas /usr/local/bin/ptxas-cuda
 RUN umask 000 \
     && pip install /tmp/wheels/*.whl triton \
     && rm -rf /tmp/wheels \
@@ -220,3 +250,9 @@ ENV SYCL_CACHE_PERSISTENT=1 \
 FROM runtime AS runtime-plain
 
 FROM runtime-${FLAVOR} AS final
+# Identifies what is bundled in this image; CI compares it to decide whether to rebuild. Set last so a change
+# only touches the image config, never a cached layer.
+ARG BUNDLE_ID=dev
+ARG BUILD_ID=dev
+LABEL comfyui-docker.bundle-id="$BUNDLE_ID" \
+      comfyui-docker.build-id="$BUILD_ID"
