@@ -244,6 +244,12 @@ docker build -t comfyui-xpu --build-arg FLAVOR=xpu \
   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/xpu .
 ```
 
+`TORCH_VERSION` pins the exact torch build (e.g. `2.14.1+cu130`); left empty, the latest on the index is used.
+`FLAVOR=sage` compiles SageAttention locally (slow: it installs the CUDA toolkit and builds the kernels). To reuse a
+compiled wheel instead, pass `--build-arg SAGE_DIST=<image>` with an image built from the `sage-dist` target.
+CI does this: it publishes one `sage-dist` image per SageAttention commit, torch version and architecture, so
+SageAttention is only recompiled when one of those changes.
+
 The Intel driver versions are pinned in the Dockerfile (`NEO_VERSION`, `IGC_VERSION`, `LEVEL_ZERO_VERSION` and
 their checksums). Bump them together from the
 [compute runtime releases](https://github.com/intel/compute-runtime/releases).
