@@ -253,4 +253,6 @@ FROM runtime-${FLAVOR} AS final
 # Identifies what is bundled in this image; CI compares it to decide whether to rebuild. Set last so a change
 # only touches the image config, never a cached layer.
 ARG BUNDLE_ID=dev
-LABEL comfyui-docker.bundle-id="$BUNDLE_ID"
+ARG BUILD_ID=dev
+LABEL comfyui-docker.bundle-id="$BUNDLE_ID" \
+      comfyui-docker.build-id="$BUILD_ID"

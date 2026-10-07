@@ -42,6 +42,7 @@ jobs:
       vhs_sha: ${{ steps.v.outputs.vhs_sha }}
       sage_sha: ${{ steps.v.outputs.sage_sha }}
       bundle_id: ${{ steps.v.outputs.bundle_id }}
+      build_id: ${{ steps.v.outputs.build_id }}
     steps:
       - uses: docker/login-action@v4
         with:
@@ -86,6 +87,8 @@ jobs:
             echo "vhs_sha=$vhs_sha"
             echo "sage_sha=$sage_sha"
             echo "bundle_id=$bundle_id"
+            # UTC timestamp identifying this build, so images rebuilt for the same ComfyUI version stay distinct.
+            echo "build_id=$(date -u +%Y%m%d%H%M%S)"
             echo "version=$version"
             echo "ref=v$version"
             echo "build=$build"
@@ -206,6 +209,7 @@ jobs:
             COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
             VHS_REF=${{ needs.check.outputs.vhs_sha }}
             BUNDLE_ID=${{ needs.check.outputs.bundle_id }}
+            BUILD_ID=${{ needs.check.outputs.build_id }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=registry,ref=${{ env.CACHE }}:${{ matrix.variant }}-${{ matrix.arch }}
           cache-to: type=registry,ref=${{ env.CACHE }}:${{ matrix.variant }}-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
@@ -253,11 +257,13 @@ jobs:
       - name: Create multi-arch manifests
         env:
           VERSION: ${{ needs.check.outputs.version }}
+          BUILD_ID: ${{ needs.check.outputs.build_id }}
           IS_LATEST: ${{ needs.check.outputs.is_latest }}
           SUFFIX: ${{ matrix.variant.suffix }}
         working-directory: ${{ runner.temp }}/digests
         run: |
-          tags=(-t "$IMAGE:${VERSION}${SUFFIX}")
+          # The version tag moves to each rebuild; the version-build tag is immutable.
+          tags=(-t "$IMAGE:${VERSION}${SUFFIX}" -t "$IMAGE:${VERSION}-${BUILD_ID}${SUFFIX}")
           if [ "$IS_LATEST" = "true" ]; then
             tags+=(-t "$IMAGE:latest${SUFFIX}")
           fi
@@ -266,9 +272,9 @@ jobs:
           docker buildx imagetools inspect "$IMAGE:${VERSION}${SUFFIX}"
 
   release:
-    # Record each published version as a GitHub release; feeds the version badge in the README.
+    # Record each published build as a GitHub release, tagged like the image; feeds the version badge in the README.
     needs: [check, merge]
-    if: ${{ !cancelled() && needs.check.outputs.build == 'true' && needs.check.outputs.is_latest == 'true' }}
+    if: ${{ !cancelled() && needs.check.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -283,14 +289,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
+          BUILD_ID: ${{ needs.check.outputs.build_id }}
+          IS_LATEST: ${{ needs.check.outputs.is_latest }}
+          AGENT_SHA: ${{ needs.check.outputs.agent_sha }}
+          VHS_SHA: ${{ needs.check.outputs.vhs_sha }}
+          SAGE_SHA: ${{ needs.check.outputs.sage_sha }}
         run: |
+          tag="$VERSION-$BUILD_ID"
           # Only record a release if the main image was actually published.
-          if ! docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
-            echo "Image $IMAGE:$VERSION is not published; skipping release"
+          if ! docker buildx imagetools inspect "$IMAGE:$tag" >/dev/null 2>&1; then
+            echo "Image $IMAGE:$tag is not published; skipping release"
             exit 0
           fi
-          if ! gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --title "ComfyUI $VERSION" \
-              --notes "Docker image for [ComfyUI $VERSION](https://github.com/Comfy-Org/ComfyUI/releases/tag/v$VERSION): \`docker pull ghcr.io/$GITHUB_REPOSITORY:$VERSION\`"
+          if gh release view "v$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
           fi
+          notes=$(cat <<EOF
+          Docker image for [ComfyUI $VERSION](https://github.com/Comfy-Org/ComfyUI/releases/tag/v$VERSION), build $BUILD_ID:
+
+          \`\`\`
+          docker pull ghcr.io/$GITHUB_REPOSITORY:$tag
+          \`\`\`
+
+          Bundled:
+          - comfyui-docker [\`${GITHUB_SHA:0:12}\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)
+          - Comfier agent [\`${AGENT_SHA:0:12}\`](https://github.com/romkey/comfier-ui/commit/$AGENT_SHA)
+          - VideoHelperSuite [\`${VHS_SHA:0:12}\`](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/commit/$VHS_SHA)
+          - SageAttention (\`-sage\` image) [\`${SAGE_SHA:0:12}\`](https://github.com/thu-ml/SageAttention/commit/$SAGE_SHA)
+          EOF
+          )
+          # A rebuild of an older ComfyUI version must not take the "latest" badge from the newest one.
+          gh release create "v$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "ComfyUI $VERSION (build $BUILD_ID)" \
+            --latest="$IS_LATEST" \
+            --notes "$notes"
