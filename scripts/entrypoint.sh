@@ -165,7 +165,13 @@ fi
 [ -n "${COMFYUI_TLS_KEYFILE:-}" ] && args+=(--tls-keyfile "$COMFYUI_TLS_KEYFILE")
 [ -n "${COMFYUI_TLS_CERTFILE:-}" ] && args+=(--tls-certfile "$COMFYUI_TLS_CERTFILE")
 [ -n "${COMFYUI_EXTRA_MODEL_PATHS_CONFIG:-}" ] && args+=(--extra-model-paths-config "$COMFYUI_EXTRA_MODEL_PATHS_CONFIG")
-[ -n "${COMFYUI_FAST:-}" ] && args+=(--fast "$COMFYUI_FAST")
+# Performance features: all (bare --fast, enables everything) or a whitespace/comma-separated list.
+if [ "${COMFYUI_FAST:-}" = "all" ]; then
+    args+=(--fast)
+elif [ -n "${COMFYUI_FAST:-}" ]; then
+    read -r -a fast_features <<<"${COMFYUI_FAST//,/ }"
+    args+=(--fast "${fast_features[@]}")
+fi
 
 is_true "${COMFYUI_ENABLE_MANAGER:-true}" && args+=(--enable-manager)
 is_true "${COMFYUI_FORCE_FP16:-false}" && args+=(--force-fp16)

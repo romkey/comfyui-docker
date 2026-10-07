@@ -31,6 +31,30 @@ only when it detects one of those GPUs, and otherwise falls back to ComfyUI's de
 SageAttention doesn't support Jetson Thor (sm_110), so use the default image there. Set
 `COMFYUI_ATTENTION=pytorch` to turn Sage off.
 
+### DGX Spark and Jetson Thor
+
+Both share 128 GB between CPU and GPU, so ComfyUI's default habit of offloading models to "CPU RAM" is just a
+copy within the same memory, and it will happily treat nearly all of it as VRAM. Suggested `.env` settings:
+
+```bash
+# DGX Spark (GB10)
+COMFYUI_TAG=latest-sage        # SageAttention turns on automatically for sm_121
+COMFYUI_VRAM_MODE=highvram     # keep models on the GPU; gpu-only also works with 128 GB
+COMFYUI_RESERVE_VRAM=12        # GB left for the OS and anything else running (more if you run an LLM too)
+
+# Jetson Thor
+COMFYUI_TAG=latest             # not -sage: SageAttention doesn't support sm_110
+COMFYUI_VRAM_MODE=highvram
+COMFYUI_RESERVE_VRAM=16
+```
+
+Both are Blackwell, so `COMFYUI_FAST=fp8_matrix_mult` can speed up FP8 models; `fp16_accumulation` is faster
+still at a small cost in precision. Benchmark your own workflows before keeping either. xformers isn't
+installed, so `--disable-xformers` is unnecessary.
+
+On Thor, the host power mode matters more than any ComfyUI setting. It ships in a reduced mode; on the host run
+`sudo nvpmodel -m 0` and `sudo jetson_clocks` for full performance.
+
 ### AMD Strix Halo
 
 Strix Halo (Ryzen AI Max, gfx1151) uses ROCm, so it needs its own image: `-rocm-gfx1151` (x86_64 only). It
@@ -106,6 +130,8 @@ Common ones:
 | `COMFYUI_PORT`                   | 8188      | Port inside the container                             |
 | `COMFYUI_CPU`                    | `auto`    | `auto` falls back to CPU when no CUDA device is found |
 | `COMFYUI_VRAM_MODE`              | –         | `gpu-only`, `highvram`, `lowvram`, `novram`           |
+| `COMFYUI_RESERVE_VRAM`           | –         | GB of VRAM to leave free                              |
+| `COMFYUI_FAST`                   | –         | `all`, or a list such as `fp8_matrix_mult,fp16_accumulation` |
 | `COMFYUI_ENABLE_MANAGER`         | `true`    | Enable ComfyUI-Manager                                |
 | `COMFYUI_INSTALL_NODE_REQUIREMENTS` | `false` | Install custom nodes' `requirements.txt` on start     |
 | `COMFYUI_ARGS`                   | –         | Any extra raw ComfyUI arguments                       |
