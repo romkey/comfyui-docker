@@ -22,6 +22,11 @@ on:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  # BuildKit layer cache, one tag per variant/arch. Lives in the registry: the GitHub Actions cache (10 GB) is too
+  # small for the CUDA layers and evicted most variants on every run.
+  CACHE: ghcr.io/${{ github.repository }}/cache
+  # Compiled SageAttention wheels (the Dockerfile's sage-dist stage), tagged by everything that goes into them.
+  SAGE_DIST: ghcr.io/${{ github.repository }}/sage-dist
 
 jobs:
   check:
@@ -125,6 +130,66 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve torch version
+        # Pin the exact torch build so a cached layer never holds a stale torch, and the SageAttention wheel is
+        # compiled against the version the image installs. Resolved in the base image so the platform matches.
+        id: torch
+        env:
+          INDEX: ${{ matrix.index }}
+          BASE: ${{ matrix.base || 'python:3.12-slim-bookworm' }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(docker run --rm --platform "linux/$ARCH" "$BASE" \
+            pip index versions torch --index-url "$INDEX" 2>/dev/null | sed -n 's/^torch (\(.*\))$/\1/p')
+          if [ -z "$version" ]; then
+            echo "Could not resolve the torch version on $INDEX" >&2
+            exit 1
+          fi
+          echo "torch $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Look for a prebuilt SageAttention wheel
+        if: matrix.flavor == 'sage'
+        id: sage
+        env:
+          SAGE_REF: ${{ needs.check.outputs.sage_sha }}
+          TORCH_VERSION: ${{ steps.torch.outputs.version }}
+          INDEX: ${{ matrix.index }}
+          BASE: ${{ matrix.base || 'python:3.12-slim-bookworm' }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Key on everything that goes into the wheel, including the sage-dist section of the Dockerfile,
+          # so it is compiled once and reused until one of those changes.
+          section=$(sed -n '/^# >>> sage-dist/,/^# <<< sage-dist/p' Dockerfile)
+          if [ -z "$section" ]; then
+            echo "sage-dist markers not found in Dockerfile" >&2
+            exit 1
+          fi
+          key=$(printf '%s\n' "$SAGE_REF" "$TORCH_VERSION" "$INDEX" "$BASE" "$ARCH" "$section" | sha256sum | cut -c1-16)
+          ref="$SAGE_DIST:${SAGE_REF:0:12}-$key-$ARCH"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+            echo "Reusing $ref"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No $ref yet; compiling SageAttention"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build SageAttention wheel
+        if: matrix.flavor == 'sage' && steps.sage.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: sage-dist
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            TORCH_INDEX_URL=${{ matrix.index }}
+            TORCH_VERSION=${{ steps.torch.outputs.version }}
+            BASE_IMAGE=${{ matrix.base || 'python:3.12-slim-bookworm' }}
+            SAGE_REF=${{ needs.check.outputs.sage_sha }}
+          tags: ${{ steps.sage.outputs.ref }}
+          push: true
+          cache-from: type=registry,ref=${{ env.CACHE }}:sage-dist-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.CACHE }}:sage-dist-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -133,16 +198,17 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           build-args: |
             TORCH_INDEX_URL=${{ matrix.index }}
+            TORCH_VERSION=${{ steps.torch.outputs.version }}
             FLAVOR=${{ matrix.flavor }}
             BASE_IMAGE=${{ matrix.base || 'python:3.12-slim-bookworm' }}
-            SAGE_REF=${{ needs.check.outputs.sage_sha }}
+            SAGE_DIST=${{ steps.sage.outputs.ref || 'sage-dist' }}
             COMFYUI_REF=${{ needs.check.outputs.ref }}
             COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
             VHS_REF=${{ needs.check.outputs.vhs_sha }}
             BUNDLE_ID=${{ needs.check.outputs.bundle_id }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.arch }}
+          cache-from: type=registry,ref=${{ env.CACHE }}:${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.CACHE }}:${{ matrix.variant }}-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
       - name: Export digest
         run: |
           mkdir -p "${RUNNER_TEMP}/digests"
