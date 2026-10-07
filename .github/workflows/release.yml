@@ -94,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [cu130, cu128, cpu, sage, rocm-gfx1151]
+        variant: [cu130, cu128, cpu, sage, rocm-gfx1151, xpu]
         arch: [amd64, arm64]
         include:
           - { variant: cu130, index: "https://download.pytorch.org/whl/cu130", flavor: plain }
@@ -102,11 +102,17 @@ jobs:
           - { variant: cpu, index: "https://download.pytorch.org/whl/cpu", flavor: plain }
           - { variant: sage, index: "https://download.pytorch.org/whl/cu130", flavor: sage }
           - { variant: rocm-gfx1151, index: "https://repo.amd.com/rocm/whl/gfx1151/", flavor: rocm }
+          - variant: xpu
+            index: "https://download.pytorch.org/whl/xpu"
+            flavor: xpu
+            base: python:3.12-slim-trixie
           - { arch: amd64, runner: ubuntu-26.04 }
           - { arch: arm64, runner: ubuntu-26.04-arm }
         exclude:
           # AMD Strix Halo is x86_64 only.
           - { variant: rocm-gfx1151, arch: arm64 }
+          # Intel's GPU driver and the xpu PyTorch wheels are x86_64 only.
+          - { variant: xpu, arch: arm64 }
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -128,6 +134,7 @@ jobs:
           build-args: |
             TORCH_INDEX_URL=${{ matrix.index }}
             FLAVOR=${{ matrix.flavor }}
+            BASE_IMAGE=${{ matrix.base || 'python:3.12-slim-bookworm' }}
             SAGE_REF=${{ needs.check.outputs.sage_sha }}
             COMFYUI_REF=${{ needs.check.outputs.ref }}
             COMFIER_AGENT_REF=${{ needs.check.outputs.agent_sha }}
@@ -164,6 +171,7 @@ jobs:
           - { name: cpu, suffix: "-cpu" }
           - { name: sage, suffix: "-sage" }
           - { name: rocm-gfx1151, suffix: "-rocm-gfx1151" }
+          - { name: xpu, suffix: "-xpu" }
     steps:
       - uses: actions/download-artifact@v8
         with:
