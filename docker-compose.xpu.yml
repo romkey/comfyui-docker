@@ -1,0 +1,27 @@
+# Intel Arc GPUs (Battlemage: B580, Arc Pro B70; also Alchemist) on Linux. x86_64 only.
+# Needs the xe (or i915) kernel driver on the host; the image bundles Intel's compute runtime.
+#   docker compose -f docker-compose.xpu.yml up -d
+# See "Intel Arc" in the README for kernel/BIOS settings and multi-GPU hosts.
+services:
+  comfyui:
+    image: ghcr.io/romkey/comfyui-docker:${COMFYUI_TAG:-latest}-xpu
+    # Set COMFYUI_CONTAINER_NAME to run one instance per GPU (see the README).
+    container_name: ${COMFYUI_CONTAINER_NAME:-comfyui}
+    restart: unless-stopped
+    ports:
+      - "${COMFYUI_HOST_PORT:-8188}:8188"
+    volumes:
+      - ${COMFYUI_DATA:-./data}:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      COMFYUI_ONEAPI_DEVICE_SELECTOR: ${COMFYUI_ONEAPI_DEVICE_SELECTOR:-}
+    # The entrypoint adds the unprivileged user to the group that owns the render nodes (usually "render").
+    devices:
+      - /dev/dri:/dev/dri
+    ipc: host

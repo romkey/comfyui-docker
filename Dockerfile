@@ -1,11 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# Image flavor: "plain" (default), "sage" (adds SageAttention compiled for Blackwell GPUs; needs a CUDA torch index)
-# or "rocm" (AMD Strix Halo defaults; use with an AMD ROCm TORCH_INDEX_URL).
+# Image flavor: "plain" (default), "sage" (adds SageAttention compiled for Blackwell GPUs; needs a CUDA torch index),
+# "rocm" (AMD Strix Halo defaults; use with an AMD ROCm TORCH_INDEX_URL)
+# or "xpu" (Intel Arc user-space GPU driver; use with the xpu torch index and a trixie BASE_IMAGE).
 # BuildKit only builds the stages the chosen flavor needs, so plain builds never touch the CUDA toolkit stage.
 ARG FLAVOR=plain
+# Intel's GPU driver packages need glibc >= 2.38, so the xpu flavor builds on python:3.12-slim-trixie.
+ARG BASE_IMAGE=python:3.12-slim-bookworm
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM ${BASE_IMAGE} AS runtime
 
 # Which PyTorch wheel index to use:
 #   cu130 (default) - CUDA 13: Blackwell, DGX Spark (GB10), Jetson Thor, recent drivers (>= 580)
@@ -13,6 +16,7 @@ FROM python:3.12-slim-bookworm AS runtime
 #   cpu             - CPU only (smallest; use on macOS / Docker Desktop, which has no GPU passthrough)
 #   https://repo.amd.com/rocm/whl/gfx1151/ - AMD Strix Halo (Ryzen AI Max); pair with FLAVOR=rocm. Other AMD
 #                     families have their own index there (gfx1150, gfx110X-all, gfx120X-all, ...). x86_64 only.
+#   xpu             - Intel Arc (Battlemage B580, Arc Pro B70, Alchemist); pair with FLAVOR=xpu. x86_64 only.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 # Git tag/branch/commit of ComfyUI to build
 ARG COMFYUI_REF=master
@@ -167,6 +171,51 @@ ENV HSA_OVERRIDE_GFX_VERSION=11.5.1 \
     MIOPEN_CUSTOM_CACHE_DIR=/data/cache/miopen \
     COMFYUI_DISABLE_MMAP=true \
     COMFYUI_BF16_VAE=true
+
+# ---------------------------------------------------------------------------
+# Intel Arc flavor (Battlemage: B580, Arc Pro B70; also Alchemist). The xpu PyTorch wheels bundle the SYCL/oneAPI
+# runtime but not the GPU's user-space driver, so install Intel's compute runtime (Level Zero + OpenCL) here.
+# The host only needs the xe (or i915) kernel driver. x86_64 only.
+# ---------------------------------------------------------------------------
+FROM runtime AS runtime-xpu
+# Bump together from https://github.com/intel/compute-runtime/releases (its notes name the matching IGC version).
+# The compute runtime's own packages are checked against its published sum file; IGC and the Level Zero loader
+# publish no sums, so their SHA-256s are pinned here.
+ARG NEO_VERSION=26.35.39758.10
+ARG GMMLIB_VERSION=22.10.0
+ARG IGC_VERSION=2.41.5+22716
+ARG IGC_CORE_SHA256=0a6e64a663ae65a0fa02d6912ae3b6b37cf85b90c21cc423fd9fef70aaf4f628
+ARG IGC_OPENCL_SHA256=779e1b9e88098eb25711e9a8f67c2752665bad22f134aa40ed5649f6e1b87058
+ARG LEVEL_ZERO_VERSION=1.34.0
+ARG LEVEL_ZERO_SHA256=45210e4549cd965ad7b9f160eefe53cbcdba01af341bea7ac7ba0aedeeb613ba
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+WORKDIR /tmp/neo
+RUN [ "$(dpkg --print-architecture)" = amd64 ] || { echo "Intel GPU drivers are x86_64 only" >&2; exit 1; } \
+    && python -c "import torch; assert torch.xpu._is_compiled(), 'TORCH_INDEX_URL must be the xpu index'" \
+    && neo="https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}" \
+    && igc="https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION%+*}" \
+    && curl -fsSL --remote-name-all \
+        "$neo/libze-intel-gpu1_${NEO_VERSION}-0_amd64.deb" \
+        "$neo/intel-opencl-icd_${NEO_VERSION}-0_amd64.deb" \
+        "$neo/libigdgmm12_${GMMLIB_VERSION}_amd64.deb" \
+        "$igc/intel-igc-core-2_${IGC_VERSION}_amd64.deb" \
+        "$igc/intel-igc-opencl-2_${IGC_VERSION}_amd64.deb" \
+        "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/libze1_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb" \
+    && curl -fsSL "$neo/ww$(cut -d. -f2 <<<"$NEO_VERSION").sum" | sha256sum -c --ignore-missing \
+    && printf '%s  %s\n' \
+        "$IGC_CORE_SHA256" "intel-igc-core-2_${IGC_VERSION}_amd64.deb" \
+        "$IGC_OPENCL_SHA256" "intel-igc-opencl-2_${IGC_VERSION}_amd64.deb" \
+        "$LEVEL_ZERO_SHA256" "libze1_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb" | sha256sum -c \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ./*.deb ocl-icd-libopencl1 \
+    && rm -rf /var/lib/apt/lists/* /tmp/neo
+WORKDIR /opt/ComfyUI
+# Keep the SYCL and compute-runtime kernel caches on the data volume so JIT-compiled kernels survive restarts.
+ENV SYCL_CACHE_PERSISTENT=1 \
+    SYCL_CACHE_DIR=/data/cache/sycl \
+    NEO_CACHE_PERSISTENT=1 \
+    NEO_CACHE_DIR=/data/cache/neo
 
 FROM runtime AS runtime-plain
 

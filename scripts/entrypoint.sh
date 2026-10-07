@@ -24,7 +24,7 @@ if [ "$(id -u)" = "0" ]; then
         chown -R comfy:comfy "$DATA_DIR"
     fi
     # gosu drops the container's supplementary groups, so grant the unprivileged user access to GPU device
-    # nodes (AMD /dev/kfd and /dev/dri/*) by adding it to whichever groups own them.
+    # nodes (AMD /dev/kfd, AMD and Intel /dev/dri/*) by adding it to whichever groups own them.
     for dev in /dev/kfd /dev/dri/*; do
         [ -e "$dev" ] || continue
         dev_gid="$(stat -c %g "$dev")"
@@ -40,7 +40,7 @@ if [ "$(id -u)" = "0" ]; then
     exec gosu comfy "$0" "$@"
 fi
 
-mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes,cache/huggingface,cache/miopen}
+mkdir -p "$DATA_DIR"/{models,input,output,temp,user,custom_nodes,cache/huggingface,cache/miopen,cache/sycl,cache/neo}
 for d in checkpoints clip clip_vision configs controlnet diffusers diffusion_models embeddings \
     gligen hypernetworks loras text_encoders unet upscale_models vae vae_approx; do
     mkdir -p "$DATA_DIR/models/$d"
@@ -116,15 +116,18 @@ args=(
     --disable-auto-launch
 )
 
-# Device selection: auto-detect CUDA unless COMFYUI_CPU is set explicitly.
+# Device selection: auto-detect a CUDA/ROCm or Intel XPU device unless COMFYUI_CPU is set explicitly.
 cpu="${COMFYUI_CPU:-auto}"
 if [ "$cpu" = "auto" ]; then
-    if python -c 'import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)' 2>/dev/null; then
+    if python -c 'import sys, torch; sys.exit(0 if torch.cuda.is_available() or torch.xpu.is_available() else 1)' 2>/dev/null; then
         cpu=false
     else
         echo "[entrypoint] No GPU available; running on CPU (set COMFYUI_CPU=false to disable this fallback)"
         if python -c 'import sys, torch; sys.exit(0 if torch.version.hip else 1)' 2>/dev/null; then
             echo "[entrypoint] This is a ROCm build: pass /dev/kfd and /dev/dri into the container (see docker-compose.rocm.yml)"
+        fi
+        if python -c 'import sys, torch; sys.exit(0 if torch.xpu._is_compiled() else 1)' 2>/dev/null; then
+            echo "[entrypoint] This is an Intel XPU build: pass /dev/dri into the container (see docker-compose.xpu.yml)"
         fi
         cpu=true
     fi
@@ -139,6 +142,7 @@ case "${COMFYUI_VRAM_MODE:-}" in
 esac
 
 [ -n "${COMFYUI_CUDA_DEVICE:-}" ] && args+=(--cuda-device "$COMFYUI_CUDA_DEVICE")
+[ -n "${COMFYUI_ONEAPI_DEVICE_SELECTOR:-}" ] && args+=(--oneapi-device-selector "$COMFYUI_ONEAPI_DEVICE_SELECTOR")
 [ -n "${COMFYUI_PREVIEW_METHOD:-}" ] && args+=(--preview-method "$COMFYUI_PREVIEW_METHOD")
 [ -n "${COMFYUI_RESERVE_VRAM:-}" ] && args+=(--reserve-vram "$COMFYUI_RESERVE_VRAM")
 
