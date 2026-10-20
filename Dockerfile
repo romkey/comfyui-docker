@@ -6,7 +6,7 @@
 # BuildKit only builds the stages the chosen flavor needs, so plain builds never touch the CUDA toolkit stage.
 ARG FLAVOR=plain
 # Intel's GPU driver packages need glibc >= 2.38, so the xpu flavor builds on python:3.12-slim-trixie.
-ARG BASE_IMAGE=python:3.12-slim-bookworm
+ARG BASE_IMAGE=python:3.15-slim-bookworm
 # Where the sage flavor gets its compiled SageAttention wheel: the sage-dist stage below (compiles it), or a
 # prebuilt sage-dist image. CI publishes one per SageAttention/torch/arch combination so it compiles only once.
 ARG SAGE_DIST=sage-dist
