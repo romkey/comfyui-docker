@@ -55,9 +55,13 @@ COMFYUI_VRAM_MODE=highvram
 COMFYUI_RESERVE_VRAM=16
 ```
 
-Both are Blackwell, so `COMFYUI_FAST=fp8_matrix_mult` can speed up FP8 models; `fp16_accumulation` is faster
-still at a small cost in precision. Benchmark your own workflows before keeping either. xformers isn't
-installed, so `--disable-xformers` is unnecessary.
+On Spark, `COMFYUI_FAST=fp8_matrix_mult` can speed up FP8 models; `fp16_accumulation` is faster still at a small
+cost in precision. Benchmark your own workflows before keeping either. xformers isn't installed, so
+`--disable-xformers` is unnecessary.
+
+Don't use `fp8_matrix_mult` on Thor. It gives static-noise images from fp8 models (for example Qwen-Image 2512
+with fp8 weights), because ComfyUI's native fp8 matrix multiplies produce garbage on Thor's GPU (sm_110).
+Without it, fp8 weights are converted to bf16 for the math and work as expected.
 
 On Thor, the host power mode matters more than any ComfyUI setting. It ships in a reduced mode; on the host run
 `sudo nvpmodel -m 0` and `sudo jetson_clocks` for full performance.
