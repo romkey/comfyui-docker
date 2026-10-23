@@ -38,6 +38,10 @@ only when it detects one of those GPUs, and otherwise falls back to ComfyUI's de
 SageAttention doesn't support Jetson Thor (sm_110), so use the default image there. Set
 `COMFYUI_ATTENTION=pytorch` to turn Sage off.
 
+On Jetson Thor, don't use `COMFYUI_FAST=fp8_matrix_mult`. It gives static-noise images from fp8 models
+(for example Qwen-Image 2512 with fp8 weights), because ComfyUI's native fp8 matrix multiplies produce garbage
+on Thor's GPU (sm_110). Without the flag, fp8 weights are converted to bf16 for the math and work as expected.
+
 ### AMD Strix Halo
 
 Strix Halo (Ryzen AI Max, gfx1151) uses ROCm, so it needs its own image: `-rocm-gfx1151` (x86_64 only). It
